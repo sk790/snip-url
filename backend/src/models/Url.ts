@@ -10,6 +10,8 @@ export interface IUrl extends Document {
   password?: string;
   userId?: mongoose.Types.ObjectId;
   isDeleted: boolean;
+  isQr: boolean;
+  isCustom: boolean;
 }
 
 const UrlSchema: Schema = new Schema({
@@ -22,6 +24,8 @@ const UrlSchema: Schema = new Schema({
   password: { type: String },
   userId: { type: Schema.Types.ObjectId, ref: 'User' },
   isDeleted: { type: Boolean, default: false },
+  isQr: { type: Boolean, default: false },
+  isCustom: { type: Boolean, default: false },
 });
 
 export default mongoose.model<IUrl>('Url', UrlSchema);

@@ -78,7 +78,7 @@ app.post(
   "/shorten",
   optionalProtect,
   async (req: AuthRequest, res: Response): Promise<any> => {
-    const { originalUrl, startDate, expiresAt, password, customUrlCode } =
+    const { originalUrl, startDate, expiresAt, password, customUrlCode, isQr } =
       req.body;
 
     if (!originalUrl) {
@@ -142,6 +142,8 @@ app.post(
         expiresAt: expiresAt ? new Date(expiresAt) : undefined,
         password: hashedPassword,
         userId: req.user?.id,
+        isQr: !!isQr,
+        isCustom: !!customUrlCode,
       });
 
       await newUrl.save();
@@ -269,11 +271,89 @@ app.get(
   protect,
   async (req: AuthRequest, res: Response): Promise<any> => {
     try {
-      const urls = await Url.find({
+      const { status, search, type, page = 1, limit = 5 } = req.query;
+      const skip = (Number(page) - 1) * Number(limit);
+
+      let query: any = {
         userId: req.user?.id,
         isDeleted: false,
-      }).sort({ createdAt: -1 });
-      return res.json(urls);
+      };
+
+      const conditions: any[] = [];
+
+      if (status === "active") {
+        conditions.push({
+          $or: [
+            { expiresAt: { $exists: false } },
+            { expiresAt: null },
+            { expiresAt: { $gt: new Date() } },
+          ],
+        });
+      } else if (status === "expired") {
+        conditions.push({ expiresAt: { $lt: new Date() } });
+      }
+
+      if (type === "protected") {
+        conditions.push({ password: { $exists: true, $nin: [null, ""] } });
+      } else if (type === "expiry") {
+        conditions.push({ expiresAt: { $exists: true, $ne: null } });
+      } else if (type === "qr") {
+        conditions.push({ isQr: true });
+      } else if (type === "custom") {
+        conditions.push({ isCustom: true });
+      } else if (type === "normal") {
+        conditions.push({
+          $and: [
+            { $or: [{ password: { $exists: false } }, { password: null }, { password: "" }] },
+            { $or: [{ expiresAt: { $exists: false } }, { expiresAt: null }] },
+            { isQr: { $ne: true } },
+            { isCustom: { $ne: true } }
+          ]
+        });
+      }
+
+      if (search) {
+        conditions.push({
+          $or: [
+            { originalUrl: { $regex: search, $options: "i" } },
+            { urlCode: { $regex: search, $options: "i" } },
+          ],
+        });
+      }
+
+      if (conditions.length > 0) {
+        query.$and = conditions;
+      }
+
+      const totalUrls = await Url.countDocuments(query);
+      const urls = await Url.find(query)
+        .sort({ createdAt: -1 })
+        .skip(skip)
+        .limit(Number(limit));
+
+      const urlsWithClicks = await Promise.all(
+        urls.map(async (url) => {
+          const clicks = await Click.countDocuments({ urlId: url._id });
+          return { ...url.toObject(), clicks };
+        })
+      );
+
+      // Get overall stats for the user
+      const allUserUrls = await Url.find({ userId: req.user?.id, isDeleted: false });
+      const stats = {
+        total: allUserUrls.length,
+        active: allUserUrls.filter(u => !u.expiresAt || new Date(u.expiresAt) > new Date()).length,
+        expired: allUserUrls.filter(u => u.expiresAt && new Date(u.expiresAt) < new Date()).length,
+        protected: allUserUrls.filter(u => u.password).length
+      };
+
+      return res.json({
+        urls: urlsWithClicks,
+        total: totalUrls,
+        pages: Math.ceil(totalUrls / Number(limit)),
+        currentPage: Number(page),
+        stats
+      });
     } catch (error) {
       console.error(error);
       return res.status(500).json({ error: "Server error" });
